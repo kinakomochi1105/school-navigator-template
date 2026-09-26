@@ -1,0 +1,24 @@
+{
+  "name": "school-navigator-template",
+  "version": "1.0.2",
+  "private": false,
+  "type": "module",
+  "scripts": {
+    "predev": "node scripts/setup-env.mjs",
+    "dev": "vite",
+    "dev-host": "vite --host",
+    "prebuild": "node scripts/setup-env.mjs",
+    "build": "vite build",
+    "builddev": "vite build --debug",
+    "preview": "vite preview",
+    "preview-host": "vite preview --host"
+  },
+  "devDependencies": {
+    "vite": "^8.2.2",
+    "vite-plugin-pwa": "^1.3.0"
+  },
+  "dependencies": {
+    "@vitejs/plugin-legacy": "^8.2.3",
+    "leaflet": "^1.9.4"
+  }
+}
