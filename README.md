@@ -1,6 +1,6 @@
 # School Navigator Template
 
-汎用的な校内ナビゲーションのテンプレートです。実在の学校名、校舎画像、教室名、座標、イベント情報、人物画像は含めていません。
+汎用的な校内ナビゲーションのテンプレートです。実在の学校名、校舎画像、教室名、座標、イベント情報、人物画像は含めていません。  
 Example: https://school-navigator-template.pages.dev/
 
 ## セットアップ
@@ -29,9 +29,9 @@ npm run build
 `env/` に個人情報、学校固有の機密情報、許諾のない画像やイベント情報を追加しないでください。公開する場合は、画像の著作権・肖像権・施設情報の公開許可を確認してください。
 
 ## Cloudflare Pages
-ビルドするときの設定があります。
-ビルドコマンド： `npm run build`
-ビルド出力： `dist`
+ビルドするときの設定があります。  
+ビルドコマンド： `npm run build`  
+ビルド出力： `dist`  
 
 
 ## デバッグツール
@@ -41,3 +41,6 @@ npm run build
   - `Alt`左クリックすると、その位置を`lineDot`としてクリップボードにコピーできます。
     `lineDot`が設定された部屋は、経路の点線がその座標から始まります。
 
+## ライセンス
+このプロジェクトは https://github.com/manmen2414/digitalpamphlet-htbs26/ をベースに開発されました。  
+Copyright (c) 2026 mameeenn,maxgroup
