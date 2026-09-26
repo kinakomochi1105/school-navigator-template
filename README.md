@@ -29,7 +29,7 @@ npm run build
 
 ## Cloudflare Pages
 
-`functions/_middleware.js` は、任意で設定したCloudflare Pages Secret（`SITE_ACCESS_TOKEN`）によるHTML本体のアクセス制御例です。URLクエリに含める共有値は厳密な認証や機密データ保護には使わないでください。機密性が必要な場合は、認証セッションや署名付きURLを導入してください。
+`functions/_middleware.js` はすべてのリクエストをそのまま通過させるため、URLトークンなしで誰でもアクセスできます。
 
 ## デバッグ
 
