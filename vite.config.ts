@@ -6,10 +6,13 @@ import {
   PWA_DESCRIPTION,
 } from "./env/manifest.js";
 import viteLegacyPlugin from "@vitejs/plugin-legacy";
+import mapEditorPlugin from "./scripts/map-editor-plugin.mjs";
 
 // PWA用のもろもろ: PWAを使わない場合はファイルごと消してもOK
 export default defineConfig({
   plugins: [
+    // 開発時のみ: 地図エディタ (/editor.html) の保存API
+    mapEditorPlugin(),
     viteLegacyPlugin({
       targets: ["defaults", "not IE 11"],
     }),

@@ -2,6 +2,7 @@ import L from "leaflet";
 import mapInfo from "../../env/mapinfo.js";
 import { mapState, refreshRoomHighlights, requireMap } from "./state.js";
 import { showFloor } from "./update.js";
+import { SVG_HEIGHT } from "./constants.js";
 import { parseSvgPathRings } from "./navmesh.js";
 
 // Set window.ROUTE_GRID_CELL_SIZE before initialization to inspect coarser grids.
@@ -125,7 +126,8 @@ function ringFromElement(element, scaleX, scaleY) {
     ? parseSvgPathRings(element.getAttribute("d") ?? "")
     : [[...(element.getAttribute("points") ?? "").matchAll(/(-?(?:\d*\.)?\d+)[,\s]+(-?(?:\d*\.)?\d+)/g)]
       .map((m) => ({ x: Number(m[1]), y: Number(m[2]) }))];
-  return raw.map((ring) => ring.map((p) => ({ x: p.x * scaleX, y: p.y * scaleY })))
+  // SVG は上が y=0、地図座標 (lat) は下が 0 なので上下を反転する
+  return raw.map((ring) => ring.map((p) => ({ x: p.x * scaleX, y: SVG_HEIGHT - p.y * scaleY })))
     .filter((ring) => ring.length > 2 && area(ring) > 10);
 }
 

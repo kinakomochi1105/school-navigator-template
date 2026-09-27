@@ -2,6 +2,7 @@ import L from "leaflet";
 import mapInfo from "../../env/mapinfo.js";
 import { mapState, refreshRoomHighlights, requireMap } from "./state";
 import { showFloor } from "./update";
+import { SVG_HEIGHT } from "./constants";
 import { parseSvgPathRings, type Point } from "./navmesh";
 
 declare global {
@@ -184,7 +185,8 @@ function ringFromElement(element: Element, scaleX: number, scaleY: number): Poin
     ? parseSvgPathRings(element.getAttribute("d") ?? "")
     : [[...(element.getAttribute("points") ?? "").matchAll(/(-?(?:\d*\.)?\d+)[,\s]+(-?(?:\d*\.)?\d+)/g)]
       .map((m) => ({ x: Number(m[1]), y: Number(m[2]) }))];
-  return raw.map((ring) => ring.map((p) => ({ x: p.x * scaleX, y: p.y * scaleY })))
+  // SVG は上が y=0、地図座標 (lat) は下が 0 なので上下を反転する
+  return raw.map((ring) => ring.map((p) => ({ x: p.x * scaleX, y: SVG_HEIGHT - p.y * scaleY })))
     .filter((ring) => ring.length > 2 && area(ring) > 10);
 }
 
