@@ -235,7 +235,7 @@ function renderMap(): void {
     for (const polygon of floorOutline(f.shapes, f.rooms)) {
       L.polygon(polygon, {
         pane: "shapes", renderer: shapeRenderer, interactive: false,
-        color: FLOOR_STROKE, weight: 2, fillColor: FLOOR_FILL, fillOpacity: 1, lineJoin: "round",
+        color: FLOOR_STROKE, weight: 6, fillColor: FLOOR_FILL, fillOpacity: 1, lineJoin: "round",
       }).addTo(shapeLayer);
     }
   }
@@ -254,7 +254,7 @@ function renderMap(): void {
     for (const polygon of walkUnion(f.shapes)) {
       L.polygon(polygon, {
         pane: "shapes", renderer: shapeRenderer, interactive: false,
-        color: WALK_STROKE, weight: 2, fill: false, lineJoin: "round",
+        color: WALK_STROKE, weight: 1.5, fill: false, lineJoin: "round",
       }).addTo(shapeLayer);
     }
     if (selectedShape !== null) shapeLayers.get(selectedShape)?.bringToFront();

@@ -63,24 +63,14 @@ export function calculateRoomLabelArea(): void {
   roomLabelLayerGroup.eachLayer((label) => {
     if (!(label instanceof L.Marker)) return;
     const bounds = mapState.roomLabelBounds.get(label);
-    const icon = label.getIcon();
-    if (!(icon instanceof L.DivIcon)) return;
-    const optionsHtml = icon.options.html;
-    const html =
-      optionsHtml instanceof HTMLElement
-        ? optionsHtml.innerHTML
-        : optionsHtml || undefined;
-    if (!bounds) throw new Error(`calculateRoomLabelArea: unknown bounds (${html})`);
+    const element = label.getElement();
+    if (!bounds || !element) return;
     const { width, height } = calcBoundsWidthHeightPixel(bounds);
-
-    label.setIcon(
-      L.divIcon({
-        className: "map-room-text",
-        html,
-        iconSize: [width, height],
-        iconAnchor: [width / 2, height / 2],
-      }),
-    );
+    // setIcon でアイコンを作り直すと部屋が多いときに重いので、既存の要素の大きさだけ変える
+    element.style.width = `${width}px`;
+    element.style.height = `${height}px`;
+    element.style.marginLeft = `${-width / 2}px`;
+    element.style.marginTop = `${-height / 2}px`;
   });
 }
 

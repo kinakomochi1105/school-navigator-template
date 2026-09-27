@@ -20,10 +20,15 @@ export interface Shape {
   color?: string;
 }
 
-export const WALK_FILL = "#caffd1";
-export const WALK_STROKE = "#13ae67";
-export const FLOOR_FILL = "#eef0f2";
-export const FLOOR_STROKE = "#5f6368";
+/** 廊下（歩行エリア）の色 */
+export const WALK_FILL = "#dcdcdc";
+/** 廊下の輪郭（外形の内側の区切り） */
+export const WALK_STROKE = "#a8a8a8";
+const WALK_STROKE_WIDTH = 2;
+export const FLOOR_FILL = "#ffffff";
+/** 建物の外形の枠（緑の太線） */
+export const FLOOR_STROKE = "#13ae67";
+const FLOOR_STROKE_WIDTH = 12;
 
 export const SHAPE_KINDS: Record<ShapeKind, { label: string; hint: string }> = {
   walk: { label: "歩行エリア", hint: "廊下・ホールなど歩ける範囲。経路探索に使われます" },
@@ -260,15 +265,18 @@ export function shapesToSvg(shapes: Shape[], rooms: RoomInfo[] = []): string {
     ...deco.map((s) =>
       `  <path d="${ring(s.points, true)}" fill="${s.color ?? DECO_COLORS[0]}" stroke="#9e9e9e" stroke-width="2" stroke-linejoin="round"/>`),
   ];
-  if (outline) {
-    lines.push(`  <path d="${outline}" fill="${FLOOR_FILL}" fill-rule="evenodd" stroke="${FLOOR_STROKE}" stroke-width="4" stroke-linejoin="round"/>`);
-  }
+  if (outline) lines.push(`  <path d="${outline}" fill="${FLOOR_FILL}" fill-rule="evenodd"/>`);
   if (walkPath) {
-    // 1枚目で外周線を描き、2枚目の塗りで重なった歩行エリア同士の内側の線を消す
+    // 経路探索は data-walkable の付いた図形を歩行エリアとして読む。
+    // 1枚目で輪郭線を描き、2枚目の塗りで重なった歩行エリア同士の内側の線を消す
     lines.push(
-      `  <path d="${walkPath}" fill="${WALK_FILL}" stroke="${WALK_STROKE}" stroke-width="8" stroke-linejoin="round"/>`,
-      `  <path d="${walkPath}" fill="${WALK_FILL}"/>`,
+      `  <path d="${walkPath}" data-walkable="1" fill="${WALK_FILL}" stroke="${WALK_STROKE}" stroke-width="${WALK_STROKE_WIDTH}" stroke-linejoin="round"/>`,
+      `  <path d="${walkPath}" data-walkable="1" fill="${WALK_FILL}"/>`,
     );
+  }
+  // 外形の枠は廊下に隠れないよう最後に重ねる
+  if (outline) {
+    lines.push(`  <path d="${outline}" fill="none" stroke="${FLOOR_STROKE}" stroke-width="${FLOOR_STROKE_WIDTH}" stroke-linejoin="round"/>`);
   }
   lines.push("</svg>", "");
   return lines.join("\n");

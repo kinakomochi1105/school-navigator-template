@@ -10,6 +10,8 @@ import { mapState } from "./state";
  * 階層画像・部屋の矩形・部屋名ラベルを生成して state に載せる。
  */
 export function buildMapDisplay(): void {
+  // 部屋の四角は数が多いので、SVG 要素ではなく1枚の Canvas にまとめて描く
+  const roomRenderer = L.canvas({ padding: 0.5 });
   for (const floor of mapInfo.floors) {
     const imgOverlay = L.imageOverlay(`/env/${floor.floorFile}`, mapBounds, {
       attribution: mapInfo.attribution,
@@ -40,6 +42,7 @@ export function buildMapDisplay(): void {
       if (typeof color !== "undefined") {
         const defaultStyle: L.PolylineOptions = {
           className: "map-room-selectable",
+          renderer: roomRenderer,
           color,
           weight: 3,
           fillColor: color,

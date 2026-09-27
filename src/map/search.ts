@@ -1,7 +1,8 @@
 import L from "leaflet";
 import mapInfo from "../../env/mapinfo.js";
+import { debug } from "../debug";
 import { mapState, refreshRoomHighlights, requireMap } from "./state";
-import { showFloor } from "./update";
+import { refreshCurrentFloorDisplay, showFloor } from "./update";
 import { SVG_HEIGHT } from "./constants";
 import { parseSvgPathRings, type Point } from "./navmesh";
 
@@ -41,6 +42,8 @@ interface FloorGrid {
   minY: number;
   maxY: number;
   walkable: (x: number, y: number) => boolean;
+  /** 格子点 (gx, gy) が歩けるか（範囲外は false） */
+  cellAt: (gx: number, gy: number) => boolean;
   components: number;
   componentSizes: number[];
   componentAt: (x: number, y: number) => number | null;
@@ -75,6 +78,18 @@ const currentLocation: CurrentLocation = {
   point: defaultCurrentRoom?.room.lineDot ?? [212, 284],
 };
 let destinationLocation: Selection | null = null;
+
+/** 画面に出す移動の手順（階をまたぐ経路を分かりやすくする） */
+interface RouteStep {
+  floorName: string;
+  icon: string;
+  text: string;
+  /** 手順を選んだときに表示する範囲 */
+  focus: L.LatLng[];
+}
+let routeSteps: RouteStep[] = [];
+let activeStep = 0;
+const STAIR_COLOR = "#8e44ad";
 let searchMode: SearchMode = "destination";
 let routeLayer: L.LayerGroup | null = null;
 const routeSegments = new Map<string, RouteSegment>();
@@ -160,7 +175,67 @@ function renderRouteForFloor(name: string): void {
   const segment = routeSegments.get(name);
   routeLayer = segment ? L.layerGroup(segment.layers()).addTo(requireMap()) : null;
 }
-function handleRouteFloorChange(event: L.LayersControlEvent): void { renderRouteForFloor(event.name); }
+function handleRouteFloorChange(event: L.LayersControlEvent): void {
+  renderRouteForFloor(event.name);
+  // 階を手動で切り替えたら、その階の最初の手順を選択中にする
+  const index = routeSteps.findIndex((step) => step.floorName === event.name);
+  if (index >= 0) activeStep = index;
+  renderRouteSteps();
+}
+
+/** 手順の一覧（階をまたぐときだけ表示） */
+function renderRouteSteps(): void {
+  const list = document.getElementById("route-steps");
+  if (!list) return;
+  list.hidden = routeSteps.length < 2;
+  list.replaceChildren(...routeSteps.map((step, index) => {
+    const item = document.createElement("li");
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "route-step";
+    button.classList.toggle("active", index === activeStep);
+    button.classList.toggle("done", index < activeStep);
+    const number = document.createElement("span");
+    number.className = "route-step-number";
+    number.textContent = String(index + 1);
+    const icon = document.createElement("span");
+    icon.className = "material-symbols-outlined";
+    icon.textContent = step.icon;
+    const text = document.createElement("span");
+    text.className = "route-step-text";
+    const floor = document.createElement("small");
+    floor.textContent = step.floorName;
+    text.append(floor, step.text);
+    button.append(number, icon, text);
+    button.addEventListener("click", () => goToStep(index));
+    item.append(button);
+    return item;
+  }));
+}
+
+/** 手順の階を表示し、その手順の範囲に寄せる */
+function goToStep(index: number): void {
+  const step = routeSteps[index];
+  if (!step) return;
+  activeStep = index;
+  if (mapState.nowBaseLayerName !== step.floorName) {
+    showFloor(step.floorName);
+    refreshCurrentFloorDisplay();
+  }
+  renderRouteForFloor(step.floorName);
+  renderRouteSteps();
+  if (step.focus.length) {
+    // 左上の案内パネルに隠れないよう、パネルの分だけ余白をとる
+    const map = requireMap();
+    const panel = document.querySelector(".navigation-banner")?.getBoundingClientRect();
+    const box = map.getContainer().getBoundingClientRect();
+    const wide = panel && panel.right < box.width * 0.6;
+    const padding: L.PointTuple = panel
+      ? wide ? [panel.right - box.left + 16, 16] : [16, panel.bottom - box.top + 16]
+      : [16, 16];
+    map.fitBounds(L.latLngBounds(step.focus).pad(0.15), { maxZoom: 2, paddingTopLeft: padding, paddingBottomRight: [16, 16] });
+  }
+}
 
 function parseStyles(document: Document): Map<string, Record<string, string>> {
   const styles = new Map<string, Record<string, string>>();
@@ -204,8 +279,9 @@ async function buildFloorGrid(floor: FloorInfo): Promise<FloorGrid> {
     for (const cls of el.getAttribute("class")?.split(/\s+/) ?? []) Object.assign(attrs, styles.get(cls));
     Object.assign(attrs, el.dataset, { fill: el.getAttribute("fill") ?? attrs.fill, stroke: el.getAttribute("stroke") ?? attrs.stroke });
     const c = color(attrs.fill);
-    const walkable = c && ((c[0] === 202 && c[1] === 255 && c[2] === 209) ||
-      (c[0] === 0 && c[1] === 122 && c[2] === 232));
+    // 地図エディタが生成した SVG は data-walkable で示す。古い SVG は塗り色で判定する
+    const walkable = attrs.walkable === "1" || (c && ((c[0] === 202 && c[1] === 255 && c[2] === 209) ||
+      (c[0] === 0 && c[1] === 122 && c[2] === 232)));
     return walkable ? ringFromElement(el, sx, sy) : [];
   });
   const boundary = [...document.querySelectorAll("path,polygon")].flatMap((el) => {
@@ -226,38 +302,62 @@ async function buildFloorGrid(floor: FloorInfo): Promise<FloorGrid> {
   const maxX = Math.ceil(Math.max(...walkableRings.flat().map((p) => p.x)) / GRID_CELL_SIZE) + 1;
   const minY = Math.floor(Math.min(...walkableRings.flat().map((p) => p.y)) / GRID_CELL_SIZE) - 1;
   const maxY = Math.ceil(Math.max(...walkableRings.flat().map((p) => p.y)) / GRID_CELL_SIZE) + 1;
-  const walkable = (x: number, y: number): boolean => {
-    const point = { x, y };
-    const insideWalkableFill = rings.length
-      ? rings.reduce((sum, ring) => sum + windingNumber(point, ring), 0) !== 0
-      : pointInRing(point, outer);
-    return insideWalkableFill && !holes.some((hole) => pointInRing(point, hole));
-  };
-  const componentIds = new Map<string, number>();
+  // 格子点ごとの歩行可否を一度だけ計算しておく。
+  // 以前は判定のたびに全リングと全部屋を調べていたため、部屋が多いと非常に重かった。
+  const cols = maxX - minX + 1, rows = maxY - minY + 1;
+  const cells = new Uint8Array(cols * rows);
+  for (let gy = 0; gy < rows; gy++) {
+    for (let gx = 0; gx < cols; gx++) {
+      const point = { x: (gx + minX) * GRID_CELL_SIZE, y: (gy + minY) * GRID_CELL_SIZE };
+      const inside = rings.length
+        ? rings.reduce((sum, ring) => sum + windingNumber(point, ring), 0) !== 0
+        : pointInRing(point, outer);
+      if (inside) cells[gy * cols + gx] = 1;
+    }
+  }
+  // 部屋（穴）は長方形なので、内側の格子点をまとめて消す
+  for (const room of floor.rooms) {
+    const [[a, b], [c, d]] = room.bounds;
+    const north = Math.max(a, c), south = Math.min(a, c), west = Math.min(b, d), east = Math.max(b, d);
+    const y0 = Math.max(minY, Math.floor(south / GRID_CELL_SIZE) + 1), y1 = Math.min(maxY, Math.ceil(north / GRID_CELL_SIZE) - 1);
+    const x0 = Math.max(minX, Math.floor(west / GRID_CELL_SIZE) + 1), x1 = Math.min(maxX, Math.ceil(east / GRID_CELL_SIZE) - 1);
+    for (let gy = y0; gy <= y1; gy++) cells.fill(0, (gy - minY) * cols + (x0 - minX), (gy - minY) * cols + (x1 - minX) + 1);
+  }
+  const cellAt = (gx: number, gy: number): boolean =>
+    gx >= minX && gx <= maxX && gy >= minY && gy <= maxY && cells[(gy - minY) * cols + (gx - minX)] === 1;
+  // 格子点以外の座標は、最も近い格子点で判定する
+  const walkable = (x: number, y: number): boolean =>
+    cellAt(Math.round(x / GRID_CELL_SIZE), Math.round(y / GRID_CELL_SIZE));
+
+  const componentLabels = new Int32Array(cols * rows).fill(-1);
   const componentSizes: number[] = [];
   const grid: FloorGrid = {
-    floor, outer, holes, minX, maxX, minY, maxY, walkable,
+    floor, outer, holes, minX, maxX, minY, maxY, walkable, cellAt,
     components: 0,
     componentSizes,
-    componentAt: (x, y) => componentIds.get(`${x}:${y}`) ?? null,
+    componentAt: (x, y) => {
+      if (x < minX || x > maxX || y < minY || y > maxY) return null;
+      const label = componentLabels[(y - minY) * cols + (x - minX)];
+      return label < 0 ? null : label;
+    },
   };
-  const visited = new Set<string>(), key = (x: number, y: number) => `${x}:${y}`;
-  for (let y = minY; y <= maxY; y++) for (let x = minX; x <= maxX; x++) {
-    const k = key(x, y); if (visited.has(k) || !walkable(x * GRID_CELL_SIZE, y * GRID_CELL_SIZE)) continue;
-    const component = grid.components++; const queue: [number, number][] = [[x, y]]; visited.add(k); componentIds.set(k, component);
-    let componentSize = 0;
-    while (queue.length) {
-      componentSize++;
-      for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-        const nx = queue[0][0] + dx, ny = queue[0][1] + dy, nk = key(nx, ny);
-        if (!visited.has(nk) && nx >= minX && nx <= maxX && ny >= minY && ny <= maxY &&
-          walkable(nx * GRID_CELL_SIZE, ny * GRID_CELL_SIZE)) {
-          visited.add(nk); componentIds.set(nk, component); queue.push([nx, ny]);
-        }
+  const queue = new Int32Array(cols * rows);
+  for (let start = 0; start < cols * rows; start++) {
+    if (!cells[start] || componentLabels[start] >= 0) continue;
+    const component = grid.components++;
+    let head = 0, tail = 0;
+    queue[tail++] = start;
+    componentLabels[start] = component;
+    while (head < tail) {
+      const i = queue[head++];
+      const gx = i % cols, gy = (i - gx) / cols;
+      for (const j of [gx > 0 ? i - 1 : -1, gx < cols - 1 ? i + 1 : -1, gy > 0 ? i - cols : -1, gy < rows - 1 ? i + cols : -1]) {
+        if (j < 0 || !cells[j] || componentLabels[j] >= 0) continue;
+        componentLabels[j] = component;
+        queue[tail++] = j;
       }
-      queue.shift();
     }
-    componentSizes[component] = componentSize;
+    componentSizes[component] = tail;
   }
   console.info("[route-grid] floor", floor.floorName, {
     cellSize: GRID_CELL_SIZE,
@@ -266,6 +366,14 @@ async function buildFloorGrid(floor: FloorInfo): Promise<FloorGrid> {
     components: grid.components,
     componentSizes,
   });
+  if (debug) logGridDiagnostics(grid);
+  floorGridCache.set(floor.floorName, grid);
+  return grid;
+}
+
+/** 経路格子の調査用ログ（src/debug.ts の debug が true のときだけ） */
+function logGridDiagnostics(grid: FloorGrid): void {
+  const { floor, walkable } = grid;
   const traceName = globalThis.ROUTE_GRID_TRACE_ROOM ?? "2-6";
   const traceRoom = floor.rooms.find((room) => room.name === traceName);
   if (traceRoom) {
@@ -307,8 +415,6 @@ async function buildFloorGrid(floor: FloorInfo): Promise<FloorGrid> {
   console.info("[route-grid] room components", floor.floorName, isolatedRooms);
   const isolated = isolatedRooms.filter((room) => room.component === null);
   if (isolated.length) console.warn("[route-grid] isolated rooms", floor.floorName, isolated);
-  floorGridCache.set(floor.floorName, grid);
-  return grid;
 }
 
 function nearestBoundaryCell(grid: FloorGrid, point: L.LatLng, room?: RoomInfo | null): BoundaryCell {
@@ -364,17 +470,6 @@ function nearestBoundaryCell(grid: FloorGrid, point: L.LatLng, room?: RoomInfo |
     ),
   });
   return candidates[0];
-}
-function walkableSegment(grid: FloorGrid, from: GridCell, to: GridCell): boolean {
-  const distance = Math.max(Math.abs(to.x - from.x), Math.abs(to.y - from.y));
-  const samples = Math.max(2, distance * 4);
-  for (let index = 0; index <= samples; index++) {
-    const ratio = index / samples;
-    const x = (from.x + (to.x - from.x) * ratio) * GRID_CELL_SIZE;
-    const y = (from.y + (to.y - from.y) * ratio) * GRID_CELL_SIZE;
-    if (!grid.walkable(x, y)) return false;
-  }
-  return true;
 }
 function walkableLine(grid: FloorGrid, from: L.LatLng, to: L.LatLng, allowedRoom: RoomInfo | null = null): boolean {
   const distance = Math.max(Math.abs(to.lat - from.lat), Math.abs(to.lng - from.lng));
@@ -433,33 +528,86 @@ function connectPointToGrid(grid: FloorGrid, point: L.LatLng, room: RoomInfo | n
     y: Math.round(point.lat / GRID_CELL_SIZE),
   };
   for (let y = center.y - 32; y <= center.y + 32; y++) {
-    for (let x = center.x - 32; x <= center.x + 32; x++) nearbyCandidates.push({ x, y });
+    for (let x = center.x - 32; x <= center.x + 32; x++) {
+      if (grid.cellAt(x, y)) nearbyCandidates.push({ x, y });
+    }
   }
-  return nearbyCandidates.flatMap((candidate) => {
+  // 近い格子点から順に調べ、最初につながったものを使う（全候補を調べると重い）
+  nearbyCandidates.sort((a, b) =>
+    Math.abs(a.x - center.x) + Math.abs(a.y - center.y) - (Math.abs(b.x - center.x) + Math.abs(b.y - center.y)));
+  for (const candidate of nearbyCandidates) {
     const node = L.latLng(candidate.y * GRID_CELL_SIZE, candidate.x * GRID_CELL_SIZE);
-    return orthogonalCandidates(point, node)
-      .filter((path) => validOrthogonalPath(grid, path, room))
-      .map((path) => ({ node: candidate, path }));
-  });
+    const path = orthogonalCandidates(point, node).find((p) => validOrthogonalPath(grid, p, room));
+    if (path) return [{ node: candidate, path }];
+  }
+  return [];
 }
 function aStar(grid: FloorGrid, start: GridCell, goal: GridCell): L.LatLng[] | null {
-  const key = (n: GridCell) => `${n.x}:${n.y}`, open: (GridCell & { f: number })[] = [{ ...start, f: 0 }], came = new Map<string, string>(), cost = new Map([[key(start), 0]]);
-  while (open.length) {
-    open.sort((a, b) => a.f - b.f); const current = open.shift()!;
-    if (current.x === goal.x && current.y === goal.y) {
-      const result: L.LatLng[] = []; let cursor: string | undefined = key(current);
-      while (cursor) { const [x, y] = cursor.split(":").map(Number); result.unshift(L.latLng(y * GRID_CELL_SIZE, x * GRID_CELL_SIZE)); cursor = came.get(cursor); }
+  const cols = grid.maxX - grid.minX + 1, rows = grid.maxY - grid.minY + 1;
+  const index = (x: number, y: number) => (y - grid.minY) * cols + (x - grid.minX);
+  const cost = new Float64Array(cols * rows).fill(Infinity);
+  const came = new Int32Array(cols * rows).fill(-1);
+  const closed = new Uint8Array(cols * rows);
+  // 二分ヒープ（f 値の小さい順）
+  const heapF: number[] = [], heapI: number[] = [];
+  const push = (f: number, i: number) => {
+    let k = heapF.push(f) - 1;
+    heapI.push(i);
+    while (k > 0) {
+      const parent = (k - 1) >> 1;
+      if (heapF[parent] <= heapF[k]) break;
+      [heapF[parent], heapF[k]] = [heapF[k], heapF[parent]];
+      [heapI[parent], heapI[k]] = [heapI[k], heapI[parent]];
+      k = parent;
+    }
+  };
+  const pop = (): number => {
+    const top = heapI[0];
+    const lastF = heapF.pop()!, lastI = heapI.pop()!;
+    if (heapF.length) {
+      heapF[0] = lastF;
+      heapI[0] = lastI;
+      let k = 0;
+      for (;;) {
+        const l = 2 * k + 1, r = l + 1;
+        let m = k;
+        if (l < heapF.length && heapF[l] < heapF[m]) m = l;
+        if (r < heapF.length && heapF[r] < heapF[m]) m = r;
+        if (m === k) break;
+        [heapF[m], heapF[k]] = [heapF[k], heapF[m]];
+        [heapI[m], heapI[k]] = [heapI[k], heapI[m]];
+        k = m;
+      }
+    }
+    return top;
+  };
+  if (!grid.cellAt(start.x, start.y) || !grid.cellAt(goal.x, goal.y)) return null;
+  const startIndex = index(start.x, start.y), goalIndex = index(goal.x, goal.y);
+  cost[startIndex] = 0;
+  push(0, startIndex);
+  while (heapF.length) {
+    const current = pop();
+    if (closed[current]) continue;
+    closed[current] = 1;
+    if (current === goalIndex) {
+      const result: L.LatLng[] = [];
+      for (let i = current; i >= 0; i = came[i]) {
+        const x = (i % cols) + grid.minX, y = Math.floor(i / cols) + grid.minY;
+        result.unshift(L.latLng(y * GRID_CELL_SIZE, x * GRID_CELL_SIZE));
+      }
       return result;
     }
+    const cx = (current % cols) + grid.minX, cy = Math.floor(current / cols) + grid.minY;
     for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-      const next = { x: current.x + dx, y: current.y + dy };
-      if (next.x < grid.minX || next.x > grid.maxX || next.y < grid.minY || next.y > grid.maxY ||
-        !grid.walkable(next.x * GRID_CELL_SIZE, next.y * GRID_CELL_SIZE) ||
-        !walkableSegment(grid, current, next)) continue;
-      const nk = key(next), score = (cost.get(key(current)) ?? Infinity) + 1;
-      if (score >= (cost.get(nk) ?? Infinity)) continue;
-      came.set(nk, key(current)); cost.set(nk, score);
-      open.push({ ...next, f: score + Math.abs(next.x - goal.x) + Math.abs(next.y - goal.y) });
+      const nx = cx + dx, ny = cy + dy;
+      // 隣り合う格子点どうしなので、両端が歩ければ間も歩ける
+      if (!grid.cellAt(nx, ny)) continue;
+      const next = index(nx, ny);
+      const score = cost[current] + 1;
+      if (score >= cost[next]) continue;
+      came[next] = current;
+      cost[next] = score;
+      push(score + Math.abs(nx - goal.x) + Math.abs(ny - goal.y), next);
     }
   }
   return null;
@@ -535,6 +683,8 @@ export async function validateAllRoomPairs(): Promise<{ success: number; failure
 }
 if (typeof window !== "undefined") window.validateRoomRoutes = validateAllRoomPairs;
 
+const floorIndexOf = (name: string) => mapInfo.floors.findIndex((f) => f.floorName === name);
+
 async function setRoute(): Promise<void> {
   if (!destinationLocation) return;
   const id = ++routeRequestId, destination = destinationLocation, definitions: RouteDefinition[] = [];
@@ -543,15 +693,52 @@ async function setRoute(): Promise<void> {
     : centerOf(destination.room);
   const sourceFloor = mapInfo.floors.find((f) => f.floorName === currentLocation.floorName);
   if (!sourceFloor) throw new Error("現在地の階が見つかりません");
-  if (destination.floor.floorName === sourceFloor.floorName) definitions.push({
-    floor: destination.floor, start: L.latLng(currentLocation.point), goal: destinationPoint,
-    startRoom: mapState.currentRoom, goalRoom: destination.room, startMarker: ["現在地", currentLocation.point, "#2980b9"], endMarker: [destination.room.name, destinationPoint, "#d35400"],
-  });
-  else {
+  const steps: RouteStep[] = [];
+  /** 途中の階（通過するだけの階）に出す階段の目印 */
+  const passMarkers = new Map<string, RouteMarker>();
+  if (destination.floor.floorName === sourceFloor.floorName) {
+    definitions.push({
+      floor: destination.floor, start: L.latLng(currentLocation.point), goal: destinationPoint,
+      startRoom: mapState.currentRoom, goalRoom: destination.room, startMarker: ["現在地", currentLocation.point, "#2980b9"], endMarker: [destination.room.name, destinationPoint, "#d35400"],
+    });
+    steps.push({ floorName: sourceFloor.floorName, icon: "directions_walk", text: `${destination.room.name}へ向かう`, focus: [] });
+  } else {
     const pair = findStairPair(sourceFloor, destination.floor, L.latLng(currentLocation.point), destinationPoint);
     if (!pair) throw new Error("階段経由の経路を構築できません");
-    definitions.push({ floor: sourceFloor, start: L.latLng(currentLocation.point), goal: pair.source.point, startRoom: mapState.currentRoom, goalRoom: pair.source.room, startMarker: ["現在地", currentLocation.point, "#2980b9"], endMarker: [pair.source.room.name, pair.source.point, "#e67e22"] });
-    definitions.push({ floor: destination.floor, start: pair.destination.point, goal: destinationPoint, startRoom: pair.destination.room, goalRoom: destination.room, startMarker: [pair.destination.room.name, pair.destination.point, "#e67e22"], endMarker: [destination.room.name, destinationPoint, "#d35400"] });
+    const from = floorIndexOf(sourceFloor.floorName), to = floorIndexOf(destination.floor.floorName);
+    const up = to > from;
+    const arrow = up ? "↑" : "↓";
+    const stairName = pair.source.room.name;
+    // 通過する階（例: 1階→4階なら2階・3階）
+    const passing = mapInfo.floors.slice(Math.min(from, to) + 1, Math.max(from, to));
+    if (!up) passing.reverse();
+    for (const floor of passing) {
+      const stair = floor.rooms.find((room) => room.StairID === pair.source.room.StairID);
+      if (stair) {
+        passMarkers.set(floor.floorName, [`${stair.name}：通過 ${arrow} ${destination.floor.floorName}へ`, stair.lineDot ?? centerOf(stair), STAIR_COLOR]);
+      }
+    }
+    definitions.push({
+      floor: sourceFloor, start: L.latLng(currentLocation.point), goal: pair.source.point, startRoom: mapState.currentRoom, goalRoom: pair.source.room,
+      startMarker: ["現在地", currentLocation.point, "#2980b9"],
+      endMarker: [`${stairName} ${arrow} ${destination.floor.floorName}へ`, pair.source.point, STAIR_COLOR],
+    });
+    definitions.push({
+      floor: destination.floor, start: pair.destination.point, goal: destinationPoint, startRoom: pair.destination.room, goalRoom: destination.room,
+      startMarker: [`${pair.destination.room.name}（${sourceFloor.floorName}から）`, pair.destination.point, STAIR_COLOR],
+      endMarker: [destination.room.name, destinationPoint, "#d35400"],
+    });
+    const floors = Math.abs(to - from);
+    const via = passing.length ? `（${passing.map((f) => f.floorName).join("・")}を通過）` : "";
+    steps.push(
+      { floorName: sourceFloor.floorName, icon: "directions_walk", text: `${stairName}まで歩く`, focus: [] },
+      {
+        floorName: sourceFloor.floorName, icon: up ? "arrow_upward" : "arrow_downward",
+        text: `${stairName}で${destination.floor.floorName}へ${up ? "上る" : "下りる"}（${floors}階分）${via}`,
+        focus: [pair.source.point],
+      },
+      { floorName: destination.floor.floorName, icon: "flag", text: `${destination.room.name}へ向かう`, focus: [] },
+    );
   }
   const next = new Map<string, { points: L.LatLng[]; startMarker: RouteMarker; endMarker: RouteMarker }>();
   try {
@@ -565,14 +752,29 @@ async function setRoute(): Promise<void> {
     document.getElementById("route-error")?.replaceChildren(`経路を見つけられませんでした：${(error as Error).message}`);
     return;
   }
-  routeSegments.clear(); for (const [name, segment] of next) routeSegments.set(name, { layers: () => [
+  // 歩く手順には、その階の経路全体を表示範囲として持たせる
+  for (const step of steps) {
+    if (!step.focus.length) step.focus = next.get(step.floorName)?.points ?? [];
+  }
+  routeSegments.clear();
+  for (const [name, segment] of next) routeSegments.set(name, { layers: () => [
     L.polyline(segment.points, { color: "#d35400", weight: 5, dashArray: "10 8", className: "navigation-route" }),
-    L.circleMarker(segment.startMarker[1], { radius: 9, color: "#fff", weight: 3, fillColor: segment.startMarker[2], fillOpacity: 1 }).bindTooltip(segment.startMarker[0], { permanent: true }),
-    L.circleMarker(segment.endMarker[1], { radius: 11, color: "#fff", weight: 3, fillColor: segment.endMarker[2], fillOpacity: 1 }).bindTooltip(segment.endMarker[0], { permanent: true }),
+    routeMarker(segment.startMarker, 9),
+    routeMarker(segment.endMarker, 11),
   ] });
-  if (mapState.nowBaseLayerName !== destination.floor.floorName) showFloor(destination.floor.floorName);
+  for (const [name, marker] of passMarkers) routeSegments.set(name, { layers: () => [routeMarker(marker, 11)] });
+  routeSteps = steps;
   document.getElementById("route-error")?.replaceChildren();
-  renderRouteForFloor(mapState.nowBaseLayerName); updateNavigationBanner();
+  updateNavigationBanner();
+  // まずは現在地の階（最初の手順）を表示する
+  goToStep(0);
+}
+
+/** 経路上の目印。階段は色を変え、ラベルを目立たせる */
+function routeMarker([label, point, color]: RouteMarker, radius: number): L.CircleMarker {
+  const stair = color === STAIR_COLOR;
+  return L.circleMarker(point, { radius, color: "#fff", weight: 3, fillColor: color, fillOpacity: 1 })
+    .bindTooltip(label, { permanent: true, className: stair ? "route-tooltip route-tooltip-stair" : "route-tooltip" });
 }
 function updateUrl(): void {
   const params = new URLSearchParams(window.location.search); params.set("current", currentLocation.name);
